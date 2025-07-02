@@ -4,40 +4,43 @@ from dotenv import load_dotenv
 import requests
 import os
 import json
+from mangum import Mangum
 
 app = FastAPI()
 
-# .env 로부터 환경 변수 불러오기
+# Load environment variables from .env
 load_dotenv()
 SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 USER_GROUP_ID = os.environ.get("USER_GROUP_ID")
 
 if not SLACK_TOKEN:
-    raise RuntimeError("❌ SLACK_BOT_TOKEN이 설정되지 않았습니다.")
+    raise RuntimeError("SLACK_BOT_TOKEN is not set.")
+if not USER_GROUP_ID:
+    raise RuntimeError("USER_GROUP_ID is not set.")
 
 
-# 1. 채널 참여 이벤트 처리
+# 1. Handle channel join events
 @app.post("/slack/events")
 async def slack_events(req: Request):
     body = await req.json()
-    print("\n📨 Slack Event Received:", json.dumps(body, indent=2))
+    print("\nSlack Event Received:", json.dumps(body, indent=2))
 
-    # Slack URL 인증 처리
+    # Handle Slack's URL verification challenge
     if body.get("type") == "url_verification":
-        print("✅ URL verification challenge 수신")
+        print("Received URL verification challenge")
         return JSONResponse(content={"challenge": body["challenge"]})
 
-    # 실제 이벤트 콜백 처리
+    # Handle the actual event callback
     if body.get("type") == "event_callback":
         event = body.get("event", {})
-        print("🔎 이벤트 유형:", event.get("type"))
+        print(f"Event type: {event.get('type')}")
 
         if event.get("type") == "member_joined_channel":
             user_id = event.get("user")
             channel_id = event.get("channel")
-            print(f"👤 유저 {user_id} 이(가) 채널 {channel_id} 에 참여함")
+            print(f"👤 User {user_id} joined channel {channel_id}")
 
-            # 에페메랄 메시지 전송
+            # Send an ephemeral message
             resp = requests.post(
                 "https://slack.com/api/chat.postEphemeral",
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
@@ -50,7 +53,7 @@ async def slack_events(req: Request):
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": f"<@{user_id}>님 반갑습니다. 권한 승계를 위해 아래 체크버튼을 눌러주세요."
+                                "text": f"Welcome, <@{user_id}>! To get the proper permissions, please click the button below."
                             }
                         },
                         {
@@ -58,7 +61,7 @@ async def slack_events(req: Request):
                             "elements": [
                                 {
                                     "type": "button",
-                                    "text": {"type": "plain_text", "text": "✅ 체크"},
+                                    "text": {"type": "plain_text", "text": "✅ Grant Permissions"},
                                     "style": "primary",
                                     "action_id": "grant_permission"
                                 }
@@ -67,12 +70,12 @@ async def slack_events(req: Request):
                     ]
                 }
             )
-            print("📤 Ephemeral 메시지 전송 결과:", resp.status_code, resp.text)
+            print(f"📤 Ephemeral message sent. Status: {resp.status_code}, Response: {resp.text}")
 
     return JSONResponse(content={"status": "ok"})
 
 
-# 2. 버튼 클릭 처리 (Slack Interactivity)
+# 2. Handle button clicks (Slack Interactivity)
 @app.post("/slack/interactions")
 async def handle_button_click(request: Request):
     try:
@@ -80,56 +83,60 @@ async def handle_button_click(request: Request):
         payload_raw = form.get("payload")
 
         if not payload_raw:
-            print("⚠️ payload 값이 비어있음.")
+            print("⚠️ Payload is missing.")
             return JSONResponse(status_code=400, content={"error": "Missing payload"})
 
         payload = json.loads(payload_raw)
-        print("🖱️ 버튼 클릭 이벤트 수신:", json.dumps(payload, indent=2))
+        print("🖱️ Button click event received:", json.dumps(payload, indent=2))
 
         action = payload["actions"][0]
         user_id = payload["user"]["id"]
 
         if action["action_id"] == "grant_permission":
-            print("✅ 권한 부여 버튼 클릭 by", user_id)
+            print(f"✅ Permission grant button clicked by {user_id}")
 
-            # 현재 그룹 사용자 목록 조회
+            # Get the current list of users in the group
             res = requests.get(
                 "https://slack.com/api/usergroups.users.list",
                 params={"usergroup": USER_GROUP_ID},
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}"}
             )
             current_users = res.json().get("users", [])
-            print("👥 기존 그룹 멤버:", current_users)
+            print(f"👥 Existing group members: {current_users}")
 
             if user_id not in current_users:
                 current_users.append(user_id)
 
-            # 그룹 사용자 업데이트
+            # Update the user group
             update_res = requests.post(
                 "https://slack.com/api/usergroups.users.update",
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
                 data={
                     "usergroup": USER_GROUP_ID,
-                    "users": ",".join(current_users)
+                    "users": ",".join(current_users),
                 }
             )
-            print("🔧 그룹 업데이트 결과:", update_res.status_code, update_res.text)
+            print(f"🔧 Group update result. Status: {update_res.status_code}, Response: {update_res.text}")
 
-            # DM 전송
+            # Send a confirmation DM
             dm_res = requests.post(
                 "https://slack.com/api/chat.postMessage",
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
                 json={
                     "channel": user_id,
-                    "text": "✅ 권한이 부여되었습니다. 이제 팀 채널을 이용하실 수 있습니다!"
+                    "text": "✅ Permissions granted! You can now use the team channels."
                 }
             )
-            print("📨 DM 전송 결과:", dm_res.status_code, dm_res.text)
+            print(f"📨 DM sent. Status: {dm_res.status_code}, Response: {dm_res.text}")
 
-            return JSONResponse(content={"text": "✅ 권한이 부여되었습니다."})
+            return JSONResponse(content={"text": "✅ Permissions have been granted."})
 
-        return JSONResponse(content={"text": "❌ 알 수 없는 동작입니다."})
+        return JSONResponse(content={"text": "❌ Unknown action."})
 
     except Exception as e:
-        print("❗예외 발생:", str(e))
+        print(f"❗ An exception occurred: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# The Mangum handler is required for the API Gateway -> Lambda -> FastAPI integration.
+handler = Mangum(app)
