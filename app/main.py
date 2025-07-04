@@ -1,15 +1,19 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
 import requests
-import os
-import json
 from mangum import Mangum
+from dotenv import load_dotenv
+from pathlib import Path
+import json
+import os
+
+# Load .env for local development (ignored on AWS Lambda)
+env_path = Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 app = FastAPI()
 
-# Load environment variables from .env
-load_dotenv()
+# Load secrets from environment
 SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 USER_GROUP_ID = os.environ.get("USER_GROUP_ID")
 
@@ -19,18 +23,25 @@ if not USER_GROUP_ID:
     raise RuntimeError("USER_GROUP_ID is not set.")
 
 
-# 1. Handle channel join events
 @app.post("/slack/events")
 async def slack_events(req: Request):
+    """Handles Slack Events API, such as URL verification and member join events.
+
+    Args:
+        req: The incoming HTTP request from Slack.
+
+    Returns:
+        JSONResponse: A response to Slack depending on the event type.
+    """
     body = await req.json()
     print("\nSlack Event Received:", json.dumps(body, indent=2))
 
-    # Handle Slack's URL verification challenge
+    # Respond to Slack's URL verification challenge (used for endpoint validation).
     if body.get("type") == "url_verification":
         print("Received URL verification challenge")
         return JSONResponse(content={"challenge": body["challenge"]})
 
-    # Handle the actual event callback
+    # Handle actual events (e.g., member joined a channel).
     if body.get("type") == "event_callback":
         event = body.get("event", {})
         print(f"Event type: {event.get('type')}")
@@ -38,9 +49,9 @@ async def slack_events(req: Request):
         if event.get("type") == "member_joined_channel":
             user_id = event.get("user")
             channel_id = event.get("channel")
-            print(f"👤 User {user_id} joined channel {channel_id}")
+            print(f"User {user_id} joined channel {channel_id}")
 
-            # Send an ephemeral message
+            # Send a button prompt to the user using an ephemeral Slack message.
             resp = requests.post(
                 "https://slack.com/api/chat.postEphemeral",
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
@@ -70,20 +81,28 @@ async def slack_events(req: Request):
                     ]
                 }
             )
-            print(f"📤 Ephemeral message sent. Status: {resp.status_code}, Response: {resp.text}")
+            print(f"Ephemeral message sent. Status: {resp.status_code}, Response: {resp.text}")
 
     return JSONResponse(content={"status": "ok"})
 
 
-# 2. Handle button clicks (Slack Interactivity)
 @app.post("/slack/interactions")
 async def handle_button_click(request: Request):
+    """Handles Slack interactive button click (e.g., Grant Permission button).
+
+    Args:
+        request: The HTTP request from Slack Interactivity payload.
+
+    Returns:
+        JSONResponse: Result of the permission update or error response.
+    """
     try:
         form = await request.form()
         payload_raw = form.get("payload")
 
+        # Return error if payload is missing
         if not payload_raw:
-            print("⚠️ Payload is missing.")
+            print("Payload is missing.")
             return JSONResponse(status_code=400, content={"error": "Missing payload"})
 
         payload = json.loads(payload_raw)
@@ -93,21 +112,22 @@ async def handle_button_click(request: Request):
         user_id = payload["user"]["id"]
 
         if action["action_id"] == "grant_permission":
-            print(f"✅ Permission grant button clicked by {user_id}")
+            print(f"Permission grant button clicked by {user_id}")
 
-            # Get the current list of users in the group
+            # Fetch current members of the user group from Slack API.
             res = requests.get(
                 "https://slack.com/api/usergroups.users.list",
                 params={"usergroup": USER_GROUP_ID},
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}"}
             )
             current_users = res.json().get("users", [])
-            print(f"👥 Existing group members: {current_users}")
+            print(f"Existing group members: {current_users}")
 
+            # Add user to group if not already included.
             if user_id not in current_users:
                 current_users.append(user_id)
 
-            # Update the user group
+            # Update the user group with the new user list.
             update_res = requests.post(
                 "https://slack.com/api/usergroups.users.update",
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
@@ -116,9 +136,9 @@ async def handle_button_click(request: Request):
                     "users": ",".join(current_users),
                 }
             )
-            print(f"🔧 Group update result. Status: {update_res.status_code}, Response: {update_res.text}")
+            print(f"Group update result. Status: {update_res.status_code}, Response: {update_res.text}")
 
-            # Send a confirmation DM
+            # Notify the user via DM that permissions were granted.
             dm_res = requests.post(
                 "https://slack.com/api/chat.postMessage",
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
@@ -131,6 +151,7 @@ async def handle_button_click(request: Request):
 
             return JSONResponse(content={"text": "✅ Permissions have been granted."})
 
+        # Return fallback message for unknown action IDs.
         return JSONResponse(content={"text": "❌ Unknown action."})
 
     except Exception as e:
@@ -138,5 +159,6 @@ async def handle_button_click(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# The Mangum handler is required for the API Gateway -> Lambda -> FastAPI integration.
+# Required for AWS Lambda integration via API Gateway.
+# Mangum adapter wraps FastAPI to support AWS Lambda event format.
 handler = Mangum(app)
