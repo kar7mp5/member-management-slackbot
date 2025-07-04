@@ -1,0 +1,50 @@
+name: Deploy to AWS Lambda via S3
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        cd app
+        python -m venv venv
+        source venv/bin/activate
+        pip install -r requirements.txt
+
+    - name: Package Lambda
+      run: |
+        cd app/venv/lib/python3.10/site-packages
+        zip -r9 $GITHUB_WORKSPACE/lambda.zip .
+        cd $GITHUB_WORKSPACE/app
+        zip -g ../lambda.zip main.py
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Upload to S3
+      run: |
+        aws s3 cp lambda.zip s3://${{ secrets.S3_BUCKET }}/lambda.zip
+
+    - name: Deploy to Lambda
+      run: |
+        aws lambda update-function-code \
+          --function-name ${{ secrets.LAMBDA_FUNCTION_NAME }} \
+          --s3-bucket ${{ secrets.S3_BUCKET }} \
+          --s3-key lambda.zip
