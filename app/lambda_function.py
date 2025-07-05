@@ -1,164 +1,162 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
-import requests
-from mangum import Mangum
-from dotenv import load_dotenv
-from pathlib import Path
 import json
 import os
+import requests
 
-# Load .env file for local development (ignored in AWS Lambda)
-env_path = Path(__file__).parent / '.env'
-load_dotenv(dotenv_path=env_path)
+SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+USER_GROUP_ID = os.getenv("USER_GROUP_ID")
 
-app = FastAPI()
+def lambda_handler(event, context):
+    """Main AWS Lambda handler for Slack bot events.
 
-# Load secrets from environment variables
-SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
-USER_GROUP_ID = os.environ.get("USER_GROUP_ID")
-
-if not SLACK_TOKEN:
-    raise RuntimeError("SLACK_BOT_TOKEN is not set.")
-if not USER_GROUP_ID:
-    raise RuntimeError("USER_GROUP_ID is not set.")
-
-
-@app.post("/slack/events")
-async def slack_events(req: Request):
-    """
-    Handles incoming Slack Events API requests (e.g., URL verification, event_callback).
+    This function handles:
+    - Slack's URL verification challenge
+    - Member join events
+    - Interactive button clicks
 
     Args:
-        req (Request): Incoming request from Slack.
+        event (dict): AWS Lambda event payload.
+        context (object): Lambda context runtime methods and attributes.
 
     Returns:
-        Response: Either a URL challenge (for verification) or OK after event handling.
-    """
-    body = await req.json()
-    print("\nSlack Event Received:", json.dumps(body, indent=2))
-
-    # Handle Slack URL verification
-    if body.get("type") == "url_verification":
-        print("Received URL verification challenge")
-        return PlainTextResponse(content=body["challenge"])
-
-    # Handle actual Slack events
-    if body.get("type") == "event_callback":
-        event = body.get("event", {})
-        print(f"Event type: {event.get('type')}")
-
-        # Respond when a user joins a channel
-        if event.get("type") == "member_joined_channel":
-            user_id = event.get("user")
-            channel_id = event.get("channel")
-            print(f"User {user_id} joined channel {channel_id}")
-
-            # Send an ephemeral message prompting permission
-            resp = requests.post(
-                "https://slack.com/api/chat.postEphemeral",
-                headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
-                json={
-                    "channel": channel_id,
-                    "user": user_id,
-                    "text": " ",
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"🎉 <@{user_id}>님, 환영합니다! 아래 버튼을 눌러 권한을 신청해주세요."
-                            }
-                        },
-                        {
-                            "type": "actions",
-                            "elements": [
-                                {
-                                    "type": "button",
-                                    "text": {"type": "plain_text", "text": "✅ 권한 신청"},
-                                    "style": "primary",
-                                    "action_id": "grant_permission"
-                                }
-                            ]
-                        }
-                    ]
-                }
-            )
-            print(f"Ephemeral message sent. Status: {resp.status_code}, Response: {resp.text}")
-
-    return JSONResponse(content={"status": "ok"})
-
-
-@app.post("/slack/interactions")
-async def handle_button_click(request: Request):
-    """
-    Handles interactive button clicks from Slack (e.g., 권한 신청).
-
-    Args:
-        request (Request): The HTTP form-encoded payload sent by Slack.
-
-    Returns:
-        JSONResponse: Status of permission update or fallback message.
+        dict: HTTP response formatted for API Gateway.
     """
     try:
-        form = await request.form()
-        payload_raw = form.get("payload")
+        print("Incoming event:", json.dumps(event, indent=2))
+        body = json.loads(event.get("body", "{}"))
 
-        if not payload_raw:
-            print("Payload is missing.")
-            return JSONResponse(status_code=400, content={"error": "Missing payload"})
+        # Handle Slack URL verification
+        if body.get("type") == "url_verification" and "challenge" in body:
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "text/plain"},
+                "body": body["challenge"]
+            }
 
-        payload = json.loads(payload_raw)
-        print("🖱️ Button click event received:", json.dumps(payload, indent=2))
+        # Handle event_callback (e.g., member joined a channel)
+        if body.get("type") == "event_callback":
+            event_data = body.get("event", {})
+            if event_data.get("type") == "member_joined_channel":
+                user_id = event_data.get("user")
+                channel_id = event_data.get("channel")
+                print(f"User {user_id} joined channel {channel_id}")
+                send_ephemeral_welcome(user_id, channel_id)
 
-        action = payload["actions"][0]
-        user_id = payload["user"]["id"]
+        # Handle interactive message actions (form-urlencoded)
+        if event.get("headers", {}).get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
+            from urllib.parse import parse_qs
+            payload_raw = parse_qs(event["body"]).get("payload", [None])[0]
 
-        if action["action_id"] == "grant_permission":
-            print(f"Permission grant button clicked by {user_id}")
+            if payload_raw:
+                payload = json.loads(payload_raw)
+                print("Interaction payload:", json.dumps(payload, indent=2))
 
-            # Fetch existing members of the user group
-            res = requests.get(
-                "https://slack.com/api/usergroups.users.list",
-                params={"usergroup": USER_GROUP_ID},
-                headers={"Authorization": f"Bearer {SLACK_TOKEN}"}
-            )
-            current_users = res.json().get("users", [])
-            print(f"Existing group members: {current_users}")
+                action = payload["actions"][0]
+                user_id = payload["user"]["id"]
 
-            # Append user to the group if not already included
-            if user_id not in current_users:
-                current_users.append(user_id)
+                if action["action_id"] == "grant_permission":
+                    handle_grant_permission(user_id)
+                    send_dm(user_id, "Your permission has been granted. You can now access team channels.")
+                    return response_json({"text": "Permission granted."})
 
-            # Update the user group with the new list
-            update_res = requests.post(
-                "https://slack.com/api/usergroups.users.update",
-                headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
-                data={
-                    "usergroup": USER_GROUP_ID,
-                    "users": ",".join(current_users),
-                }
-            )
-            print(f"Group update result. Status: {update_res.status_code}, Response: {update_res.text}")
-
-            # Notify the user via DM
-            dm_res = requests.post(
-                "https://slack.com/api/chat.postMessage",
-                headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
-                json={
-                    "channel": user_id,
-                    "text": "🙌 권한이 부여되었습니다! 이제 팀 채널을 자유롭게 사용할 수 있어요."
-                }
-            )
-            print(f"📨 DM sent. Status: {dm_res.status_code}, Response: {dm_res.text}")
-
-            return JSONResponse(content={"text": "✅ 권한이 성공적으로 부여되었습니다."})
-
-        return JSONResponse(content={"text": "❌ 알 수 없는 동작입니다."})
+        return response_json({"message": "OK"})
 
     except Exception as e:
-        print(f"❗ An exception occurred: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        print("Error:", str(e))
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
 
+def handle_grant_permission(user_id):
+    """Adds a user to a Slack user group if not already a member.
 
-# Adapter for AWS Lambda via API Gateway
-handler = Mangum(app)
+    Args:
+        user_id (str): Slack user ID to be added to the group.
+    """
+    group_url = "https://slack.com/api/usergroups.users.list"
+    update_url = "https://slack.com/api/usergroups.users.update"
+
+    res = requests.get(
+        group_url,
+        headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
+        params={"usergroup": USER_GROUP_ID}
+    )
+    current_users = res.json().get("users", [])
+
+    # Add the user to the group if not already included
+    if user_id not in current_users:
+        current_users.append(user_id)
+
+    update_res = requests.post(
+        update_url,
+        headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
+        data={"usergroup": USER_GROUP_ID, "users": ",".join(current_users)}
+    )
+    print("Updated user group:", update_res.status_code, update_res.text)
+
+def send_ephemeral_welcome(user_id, channel_id):
+    """Sends an ephemeral message prompting the user to request permission.
+
+    Args:
+        user_id (str): Slack user ID of the joined member.
+        channel_id (str): Slack channel ID where the user joined.
+    """
+    url = "https://slack.com/api/chat.postEphemeral"
+    headers = {"Authorization": f"Bearer {SLACK_TOKEN}"}
+    data = {
+        "channel": channel_id,
+        "user": user_id,
+        "text": " ",
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"<@{user_id}> welcome! Please click the button below to request permission."
+                }
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Request Permission"},
+                        "style": "primary",
+                        "action_id": "grant_permission"
+                    }
+                ]
+            }
+        ]
+    }
+    resp = requests.post(url, headers=headers, json=data)
+    print("Ephemeral message sent:", resp.status_code, resp.text)
+
+def send_dm(user_id, message):
+    """Sends a direct message to a user via Slack.
+
+    Args:
+        user_id (str): Slack user ID.
+        message (str): Message to send.
+    """
+    resp = requests.post(
+        "https://slack.com/api/chat.postMessage",
+        headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
+        json={"channel": user_id, "text": message}
+    )
+    print("DM sent:", resp.status_code, resp.text)
+
+def response_json(data, status=200):
+    """Returns a JSON-formatted HTTP response.
+
+    Args:
+        data (dict): JSON-serializable response body.
+        status (int): HTTP status code. Defaults to 200.
+
+    Returns:
+        dict: Formatted response object for API Gateway.
+    """
+    return {
+        "statusCode": status,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(data)
+    }

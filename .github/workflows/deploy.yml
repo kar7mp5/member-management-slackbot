@@ -66,7 +66,6 @@ jobs:
 
           INTEGRATION_URI="arn:aws:apigateway:${{ secrets.AWS_REGION }}:lambda:path/2015-03-31/functions/arn:aws:lambda:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:${{ secrets.LAMBDA_FUNCTION_NAME }}/invocations"
 
-          # Create integration if it does not exist
           INTEGRATION_ID=$(aws apigatewayv2 get-integrations --api-id $API_ID --query "Items[?IntegrationUri=='$INTEGRATION_URI'].IntegrationId" --output text)
 
           if [ -z "$INTEGRATION_ID" ]; then
@@ -81,14 +80,12 @@ jobs:
             echo "Using existing integration ID: $INTEGRATION_ID"
           fi
 
-          # Create route if it does not exist
           echo "Creating route POST /slack/events"
           aws apigatewayv2 create-route \
             --api-id $API_ID \
             --route-key "POST /slack/events" \
             --target "integrations/$INTEGRATION_ID" || echo "Route already exists"
 
-          # Deploy the API
           echo "Deploying API Gateway"
           aws apigatewayv2 create-deployment \
             --api-id $API_ID \

@@ -1,5 +1,1 @@
-fastapi
-python-dotenv
 requests
-uvicorn
-mangum
