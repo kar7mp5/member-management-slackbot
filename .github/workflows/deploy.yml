@@ -2,94 +2,94 @@ name: Deploy to AWS Lambda via S3 + API Gateway Route
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout source
-      uses: actions/checkout@v3
+      - name: Checkout source
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
 
-    - name: Install dependencies
-      working-directory: ./app
-      run: |
-        python -m venv venv
-        source venv/bin/activate
-        pip install -r requirements.txt
+      - name: Install dependencies
+        working-directory: ./app
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          pip install -r requirements.txt
 
-    - name: Package Lambda
-      run: |
-        cd app/venv/lib/python3.10/site-packages
-        zip -r9 $GITHUB_WORKSPACE/lambda.zip .
-        cd $GITHUB_WORKSPACE/app
-        zip -g $GITHUB_WORKSPACE/lambda.zip main.py
+      - name: Package Lambda
+        run: |
+          cd app/venv/lib/python3.10/site-packages
+          zip -r9 $GITHUB_WORKSPACE/lambda.zip .
+          cd $GITHUB_WORKSPACE/app
+          zip -g $GITHUB_WORKSPACE/lambda.zip lambda_function.py
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-    - name: Upload to S3
-      run: |
-        echo "Uploading lambda.zip to S3"
-        ls -lh $GITHUB_WORKSPACE/lambda.zip
-        aws s3 cp "$GITHUB_WORKSPACE/lambda.zip" "s3://${{ secrets.S3_BUCKET }}/lambda.zip"
+      - name: Upload to S3
+        run: |
+          echo "Uploading lambda.zip to S3"
+          ls -lh $GITHUB_WORKSPACE/lambda.zip
+          aws s3 cp "$GITHUB_WORKSPACE/lambda.zip" "s3://${{ secrets.S3_BUCKET }}/lambda.zip"
 
-    - name: Deploy to Lambda
-      run: |
-        echo "Deploying to Lambda from S3"
-        aws lambda update-function-code \
-          --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
-          --s3-bucket "${{ secrets.S3_BUCKET }}" \
-          --s3-key lambda.zip
-      shell: bash
+      - name: Deploy to Lambda
+        run: |
+          echo "Deploying to Lambda from S3"
+          aws lambda update-function-code \
+            --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
+            --s3-bucket "${{ secrets.S3_BUCKET }}" \
+            --s3-key lambda.zip
+        shell: bash
 
-    - name: Update API Gateway route
-      run: |
-        echo "Updating API Gateway route for /slack/events"
+      - name: Update API Gateway route
+        run: |
+          echo "Updating API Gateway route for /slack/events"
 
-        API_ID=$(aws apigatewayv2 get-apis --query "Items[?Name=='slack-bot-lambda-API'].ApiId" --output text)
+          API_ID=$(aws apigatewayv2 get-apis --query "Items[?Name=='slack-bot-lambda-API'].ApiId" --output text)
 
-        if [ -z "$API_ID" ]; then
-          echo "Could not find API with name 'slack-bot-lambda-API'"
-          exit 1
-        fi
+          if [ -z "$API_ID" ]; then
+            echo "Could not find API with name 'slack-bot-lambda-API'"
+            exit 1
+          fi
 
-        INTEGRATION_URI="arn:aws:apigateway:${{ secrets.AWS_REGION }}:lambda:path/2015-03-31/functions/arn:aws:lambda:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:${{ secrets.LAMBDA_FUNCTION_NAME }}/invocations"
+          INTEGRATION_URI="arn:aws:apigateway:${{ secrets.AWS_REGION }}:lambda:path/2015-03-31/functions/arn:aws:lambda:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:${{ secrets.LAMBDA_FUNCTION_NAME }}/invocations"
 
-        # Create integration if it does not exist
-        INTEGRATION_ID=$(aws apigatewayv2 get-integrations --api-id $API_ID --query "Items[?IntegrationUri=='$INTEGRATION_URI'].IntegrationId" --output text)
+          # Create integration if it does not exist
+          INTEGRATION_ID=$(aws apigatewayv2 get-integrations --api-id $API_ID --query "Items[?IntegrationUri=='$INTEGRATION_URI'].IntegrationId" --output text)
 
-        if [ -z "$INTEGRATION_ID" ]; then
-          echo "Creating new integration"
-          INTEGRATION_ID=$(aws apigatewayv2 create-integration \
+          if [ -z "$INTEGRATION_ID" ]; then
+            echo "Creating new integration"
+            INTEGRATION_ID=$(aws apigatewayv2 create-integration \
+              --api-id $API_ID \
+              --integration-type AWS_PROXY \
+              --integration-uri "$INTEGRATION_URI" \
+              --payload-format-version 2.0 \
+              --query "IntegrationId" --output text)
+          else
+            echo "Using existing integration ID: $INTEGRATION_ID"
+          fi
+
+          # Create route if it does not exist
+          echo "Creating route POST /slack/events"
+          aws apigatewayv2 create-route \
             --api-id $API_ID \
-            --integration-type AWS_PROXY \
-            --integration-uri "$INTEGRATION_URI" \
-            --payload-format-version 2.0 \
-            --query "IntegrationId" --output text)
-        else
-          echo "Using existing integration ID: $INTEGRATION_ID"
-        fi
+            --route-key "POST /slack/events" \
+            --target "integrations/$INTEGRATION_ID" || echo "Route already exists"
 
-        # Create route if it does not exist
-        echo "Creating route POST /slack/events"
-        aws apigatewayv2 create-route \
-          --api-id $API_ID \
-          --route-key "POST /slack/events" \
-          --target "integrations/$INTEGRATION_ID" || echo "Route already exists"
-
-        # Deploy the API
-        echo "Deploying API Gateway"
-        aws apigatewayv2 create-deployment \
-          --api-id $API_ID \
-          --stage-name default
+          # Deploy the API
+          echo "Deploying API Gateway"
+          aws apigatewayv2 create-deployment \
+            --api-id $API_ID \
+            --stage-name default
