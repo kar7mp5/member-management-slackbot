@@ -116,3 +116,11 @@ Your bot is now ready! Add a new user to the channel to test the workflow.
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE.md) file for details.
+
+cd build
+zip -r ../lambda.zip .
+cd ..
+
+aws lambda update-function-code \
+  --function-name slack-bot-lambda \
+  --zip-file fileb://lambda.zip
