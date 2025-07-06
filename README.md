@@ -1,55 +1,32 @@
 # Member Management Slackbot
 
-A FastAPI-based Slack bot that automates the process of granting permissions to new members when they join a channel by adding them to a user group.
+A Slack bot that automates the process of granting permissions to new members by adding them to a user group when they join a channel.
 
 ## Table of Contents
 
 - [Features](#features)
 - [Prerequisites](#prerequisites)
-- [Getting Started](#getting-started)
-- [Running the Application](#running-the-application)
+- [Configuration](#configuration)
+- [Deployment (AWS)](#deployment-aws)
+- [Local Development](#local-development)
 - [License](#license)
 
 ## Features
 
-- **Welcome Message**: Greets users with a private, ephemeral message when they join a monitored channel.
-- **Interactive Button**: Prompts the new user to click a button to receive proper permissions.
-- **Automated Permission Granting**: Adds the user to a predefined Slack User Group upon button click.
-- **DM Confirmation**: Notifies the user via Direct Message once permissions have been successfully granted.
+- **Welcome Message**: Greets users with a private message when they join a monitored channel.
+- **Interactive Onboarding**: Prompts new users to click a button to request permissions.
+- **Automated Permissions**: Adds the user to a predefined Slack User Group upon button click.
+- **DM Confirmation**: Notifies the user via Direct Message once permissions are granted.
 
 ## Prerequisites
 
-- [Python 3.8+](https://www.python.org/)
-- [ngrok](https://ngrok.com/download) to expose your local server to the internet.
+- Python 3.10+
 - A Slack Workspace where you have permission to install apps.
+- An AWS account with permissions to manage Lambda, API Gateway, and S3.
 
-## Getting Started
+## Configuration
 
-This guide will walk you through the steps to set up the project on your local machine for development and testing.
-
-### 1. Clone the Repository
-
-```bash
-git clone <your-repository-url>
-cd member-management-slackbot
-```
-
-### 2. Install Dependencies
-
-It's highly recommended to use a virtual environment.
-
-```bash
-# Create and activate a virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-
-# Install the required packages
-pip install -r requirements.txt
-```
-
-### 3. Configure Environment Variables
-
-Create a `.env` file in the root of the project and add the following variables.
+Create a `.env` file in the root of the project and add the following variables:
 
 ```env
 # Found under "OAuth & Permissions" in your Slack App settings
@@ -59,68 +36,77 @@ SLACK_BOT_TOKEN="xoxb-..."
 USER_GROUP_ID="YOUR_SLACK_USER_GROUP_ID"
 ```
 
-### 4. Configure Your Slack App
+### Slack App Setup
 
-1.  **Create a Slack App**: Go to the Slack API page and create a new app.
-
+1.  **Create a Slack App**: Go to the [Slack API page](https://api.slack.com/apps) and create a new app.
 2.  **Add Bot Token Scopes**: Navigate to **OAuth & Permissions** and add the following scopes under "Bot Token Scopes":
-    - `chat:write` (to send messages)
-    - `usergroups:read` (to read user group members)
-    - `usergroups:write` (to update user group members)
-    - `channels:read` (to get info about public channels)
-    - `groups:read` (to get info about private channels)
-
+    - `chat:write`
+    - `usergroups:read`
+    - `usergroups:write`
+    - `channels:read`
+    - `groups:read`
 3.  **Install App to Workspace**: Install the app to your workspace to generate the `SLACK_BOT_TOKEN`.
-
-4.  **Enable Event Subscriptions**:
-    - Go to **Event Subscriptions** and toggle it on.
-    - Subscribe to the `member_joined_channel` event under "Subscribe to bot events".
-
-5.  **Enable Interactivity**:
+4.  **Enable Event Subscriptions & Interactivity**:
+    - Go to **Event Subscriptions**, toggle it on, and subscribe to the `member_joined_channel` bot event.
     - Go to **Interactivity & Shortcuts** and toggle it on.
+5.  **Add the Bot to a Channel**: Manually invite your bot to the channel you want it to monitor.
 
-6.  **Add the Bot to a Channel**: Manually invite your bot to the public or private channel you want it to monitor.
+## Deployment (AWS)
 
-> **Note**: You will set the Request URLs in the next section after starting the server.
+This project is configured for automated deployment to AWS Lambda and API Gateway using GitHub Actions.
 
-## Running the Application
+### 1. GitHub Secrets
 
-### 1. Start the FastAPI Server
+To enable automated deployment, you must configure the following secrets in your GitHub repository's **Settings > Secrets and variables > Actions**:
 
-The server will run on `http://localhost:8000`. The `--reload` flag automatically restarts the server on code changes.
+- `AWS_ACCESS_KEY_ID`: Your AWS access key ID.
+- `AWS_SECRET_ACCESS_KEY`: Your AWS secret access key.
+- `AWS_REGION`: The AWS region for your resources (e.g., `us-east-1`).
+- `LAMBDA_FUNCTION_NAME`: The name of your Lambda function.
+- `S3_BUCKET_NAME`: The name of the S3 bucket for storing the deployment package.
+- `SLACK_BOT_TOKEN`: Your Slack bot token.
+- `USER_GROUP_ID`: The ID of the Slack user group.
+
+### 2. How It Works
+
+The `.github/workflows/deploy.yml` workflow will automatically:
+
+1.  Install dependencies and create a deployment package.
+2.  Upload the package to the specified S3 bucket.
+3.  Update the Lambda function with the new code.
+4.  Update the Lambda function's environment variables.
+
+**Note**: The initial setup of the Lambda function and API Gateway must be done manually in the AWS console. This workflow only handles updates.
+
+## Local Development
+
+### 1. Clone and Install
 
 ```bash
-uvicorn main:app --reload
+git clone <your-repository-url>
+cd member-management-slackbot
+python -m venv venv
+source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+pip install -r app/requirements.txt
 ```
 
-### 2. Expose Your Local Server with ngrok
+### 2. Run the Server
 
-In a new terminal window, start ngrok to create a public URL for your local server.
+You will need a tool like [ngrok](https://ngrok.com/download) to expose your local server to the internet for Slack to send events.
 
 ```bash
+# Start the local server (if you have a local server setup)
+# uvicorn main:app --reload
+
+# Expose your local server with ngrok
 ngrok http 8000
 ```
 
-Copy the `https` Forwarding URL provided by ngrok (e.g., `https://xxxxxxxx.ngrok.io`).
-
 ### 3. Update Slack Request URLs
 
-1.  **Event Subscriptions**: Go back to your Slack App settings -> **Event Subscriptions**. Paste your ngrok URL into the "Request URL" field, appending `/slack/events`.
-    - Example: `https://xxxxxxxx.ngrok.io/slack/events`
-
-2.  **Interactivity & Shortcuts**: Go to **Interactivity & Shortcuts**. Paste your ngrok URL, appending `/slack/interactions`.
-    - Example: `https://xxxxxxxx.ngrok.io/slack/interactions`
-
-Your bot is now ready! Add a new user to the channel to test the workflow.
+1.  **Event Subscriptions**: In your Slack App settings, go to **Event Subscriptions**. Set the "Request URL" to your ngrok URL, appending `/slack/events`.
+2.  **Interactivity & Shortcuts**: Go to **Interactivity & Shortcuts**. Set the "Request URL" to your ngrok URL, appending `/slack/interactions`.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE.md) file for details.
-
-cd build
-zip -r ../lambda.zip .
-cd ..
-
-aws lambda update-function-code \
-  --function-name slack-bot-lambda \
-  --zip-file fileb://lambda.zip
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
